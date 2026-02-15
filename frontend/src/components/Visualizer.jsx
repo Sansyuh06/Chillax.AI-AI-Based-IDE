@@ -84,7 +84,7 @@ export default function Visualizer({ activeFile }) {
         const svg = svgBoxRef.current?.querySelector('svg');
         if (!svg) return;
         svg.querySelectorAll('.node').forEach(n => {
-            n.style.opacity = '0.25';
+            n.style.opacity = '0.4';
             n.style.filter = 'none';
             n.style.transition = 'opacity 0.4s ease, filter 0.4s ease';
         });
@@ -275,18 +275,22 @@ export default function Visualizer({ activeFile }) {
 
             setSteps(data.steps || []);
             setRendered(true);
-            panRef.current = { x: 0, y: 0 };
 
-            // Auto-fit
+            // Auto-fit: center diagram in container
             setTimeout(() => {
                 const s = box.querySelector('svg');
                 const c = containerRef.current?.getBoundingClientRect();
                 if (s && c) {
-                    const w = s.scrollWidth || 800;
-                    const h = s.scrollHeight || 600;
-                    const ideal = Math.max(0.25, Math.min(Math.min((c.width - 30) / w, (c.height - 80) / h), 1.4));
-                    panRef.current = { x: 0, y: 0 };
-                    setZoom(ideal);
+                    const w = s.scrollWidth || s.getBoundingClientRect().width || 800;
+                    const h = s.scrollHeight || s.getBoundingClientRect().height || 600;
+                    const idealZoom = Math.max(0.3, Math.min(Math.min((c.width - 40) / w, (c.height - 60) / h), 1.3));
+                    // Center the scaled content
+                    const scaledW = w * idealZoom;
+                    const scaledH = h * idealZoom;
+                    const cx = Math.max(0, (c.width - scaledW) / 2);
+                    const cy = Math.max(0, (c.height - scaledH) / 2);
+                    panRef.current = { x: cx, y: cy };
+                    setZoom(idealZoom);
                 }
             }, 250);
         } catch (e) {
@@ -315,8 +319,12 @@ export default function Visualizer({ activeFile }) {
         const c = containerRef.current;
         if (!s || !c) return;
         const cr = c.getBoundingClientRect();
-        const ideal = Math.max(0.25, Math.min(Math.min((cr.width - 30) / (s.scrollWidth || 800), (cr.height - 80) / (s.scrollHeight || 600)), 1.4));
-        panRef.current = { x: 0, y: 0 };
+        const w = s.scrollWidth || s.getBoundingClientRect().width || 800;
+        const h = s.scrollHeight || s.getBoundingClientRect().height || 600;
+        const ideal = Math.max(0.3, Math.min(Math.min((cr.width - 40) / w, (cr.height - 60) / h), 1.3));
+        const scaledW = w * ideal;
+        const scaledH = h * ideal;
+        panRef.current = { x: Math.max(0, (cr.width - scaledW) / 2), y: Math.max(0, (cr.height - scaledH) / 2) };
         setZoom(ideal);
     }, []);
 
@@ -422,9 +430,9 @@ export default function Visualizer({ activeFile }) {
             >
                 <div ref={svgBoxRef}
                     style={{
-                        transformOrigin: 'center top',
+                        transformOrigin: '0 0',
                         transition: dragRef.current?.on ? 'none' : 'transform 0.15s ease',
-                        padding: 20, minWidth: '100%', display: 'flex', justifyContent: 'center',
+                        display: 'inline-block',
                     }}
                 />
 
