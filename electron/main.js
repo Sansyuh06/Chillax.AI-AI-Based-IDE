@@ -58,12 +58,11 @@ function startFrontend() {
     const binDir = path.join(frontendDir, 'node_modules', '.bin');
     env.PATH = binDir + (IS_WIN ? ';' : ':') + (env.PATH || '');
 
-    const npmCmd = IS_WIN ? 'npm.cmd' : 'npm';
-    frontendProcess = spawn(npmCmd, ['run', 'dev'], {
+    frontendProcess = spawn('npm', ['run', 'dev'], {
         cwd: frontendDir,
         stdio: 'pipe',
         env: env,
-        shell: false, // Don't use shell — npm.cmd handles it
+        shell: true,
     });
     frontendProcess.stdout.on('data', d => console.log(`[Frontend] ${d.toString().trim()}`));
     frontendProcess.stderr.on('data', d => console.log(`[Frontend] ${d.toString().trim()}`));
