@@ -1,24 +1,12 @@
 const { app, BrowserWindow, shell, ipcMain, dialog } = require('electron');
 const path = require('path');
-const { spawn } = require('child_process');
 const http = require('http');
 
 // ---- Configuration ----
 const DEV_URL = 'http://localhost:5173';
-const BACKEND_PORT = 8000;
-const IS_WIN = process.platform === 'win32';
-let backendProcess = null;
-let frontendProcess = null;
 let mainWindow = null;
 
-// ---- Check if a server is already running ----
-function isServerUp(url) {
-    return new Promise((resolve) => {
-        http.get(url, () => resolve(true)).on('error', () => resolve(false));
-    });
-}
-
-// ---- Wait for server with retries ----
+// ---- Wait for Vite dev server ----
 function waitForServer(url, maxRetries = 30, interval = 1000) {
     return new Promise((resolve, reject) => {
         let attempts = 0;
@@ -32,41 +20,6 @@ function waitForServer(url, maxRetries = 30, interval = 1000) {
         };
         check();
     });
-}
-
-// ---- Start backend ----
-function startBackend() {
-    const backendDir = path.join(__dirname, '..', 'backend');
-    const cmd = IS_WIN ? 'python' : 'python3';
-    backendProcess = spawn(cmd, ['-m', 'uvicorn', 'main:app', '--port', String(BACKEND_PORT)], {
-        cwd: backendDir,
-        stdio: 'pipe',
-        shell: true,
-    });
-    backendProcess.stdout.on('data', d => console.log(`[Backend] ${d.toString().trim()}`));
-    backendProcess.stderr.on('data', d => console.log(`[Backend] ${d.toString().trim()}`));
-    backendProcess.on('error', e => console.error('Backend error:', e));
-}
-
-// ---- Start frontend ----
-function startFrontend() {
-    const frontendDir = path.join(__dirname, '..', 'frontend');
-
-    // On Windows, npm scripts can't find local binaries.
-    // Fix: add node_modules/.bin to PATH explicitly.
-    const env = { ...process.env };
-    const binDir = path.join(frontendDir, 'node_modules', '.bin');
-    env.PATH = binDir + (IS_WIN ? ';' : ':') + (env.PATH || '');
-
-    frontendProcess = spawn('npm', ['run', 'dev'], {
-        cwd: frontendDir,
-        stdio: 'pipe',
-        env: env,
-        shell: true,
-    });
-    frontendProcess.stdout.on('data', d => console.log(`[Frontend] ${d.toString().trim()}`));
-    frontendProcess.stderr.on('data', d => console.log(`[Frontend] ${d.toString().trim()}`));
-    frontendProcess.on('error', e => console.error('Frontend error:', e));
 }
 
 // ---- Create window ----
@@ -119,34 +72,15 @@ ipcMain.handle('app:info', () => ({
 
 // ---- App lifecycle ----
 app.whenReady().then(async () => {
-    console.log('[SpaghettiMap] Starting...');
+    console.log('[SpaghettiMap] Waiting for frontend dev server...');
 
-    // Check if backend already running
-    const backendUp = await isServerUp(`http://localhost:${BACKEND_PORT}/health`);
-    if (!backendUp) {
-        console.log('[SpaghettiMap] Starting backend...');
-        startBackend();
-    } else {
-        console.log('[SpaghettiMap] Backend already running.');
-    }
-
-    // Check if frontend already running
-    const frontendUp = await isServerUp(DEV_URL);
-    if (!frontendUp) {
-        console.log('[SpaghettiMap] Starting frontend...');
-        startFrontend();
-    } else {
-        console.log('[SpaghettiMap] Frontend already running.');
-    }
-
-    // Wait for frontend
     try {
-        console.log('[SpaghettiMap] Waiting for frontend...');
         await waitForServer(DEV_URL, 30, 1000);
         console.log('[SpaghettiMap] Frontend ready!');
     } catch (e) {
-        console.error('[SpaghettiMap]', e.message);
-        console.log('[SpaghettiMap] Opening window anyway...');
+        console.error('[SpaghettiMap] Frontend not detected. Start services first:');
+        console.error('  cd frontend && npm run dev');
+        console.error('  cd backend && python -m uvicorn main:app --port 8000');
     }
 
     createWindow();
@@ -157,12 +91,5 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
-    if (backendProcess) backendProcess.kill();
-    if (frontendProcess) frontendProcess.kill();
     if (process.platform !== 'darwin') app.quit();
-});
-
-app.on('before-quit', () => {
-    if (backendProcess) backendProcess.kill();
-    if (frontendProcess) frontendProcess.kill();
 });

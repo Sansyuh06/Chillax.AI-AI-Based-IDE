@@ -24,31 +24,39 @@ if errorlevel 1 (
 )
 
 :: Install backend deps
-echo [1/3] Installing backend dependencies...
+echo [1/5] Backend dependencies...
 cd /d "%~dp0backend"
 pip install -r requirements.txt -q 2>nul
 
-:: Install frontend deps
-echo [2/3] Installing frontend dependencies...
+:: Install frontend deps (CRITICAL - vite needs this)
+echo [2/5] Frontend dependencies...
 cd /d "%~dp0frontend"
-if not exist node_modules (
-    call npm install
-) else (
-    echo       (already installed)
-)
+call npm install --silent
 
 :: Install root deps (Electron)
+echo [3/5] Electron dependencies...
 cd /d "%~dp0"
-if not exist node_modules (
-    call npm install
-) else (
-    echo       (already installed)
-)
+call npm install --silent
 
-:: Launch Electron (it starts backend + frontend automatically)
-echo [3/3] Launching SpaghettiMap...
+:: Start backend in background
+echo [4/5] Starting backend server...
+cd /d "%~dp0backend"
+start /B python -m uvicorn main:app --port 8000
+
+:: Start frontend in background
+echo [5/5] Starting frontend dev server...
+cd /d "%~dp0frontend"
+start /B npx vite
+
+:: Wait for frontend to be ready
 echo.
-echo    Electron will start backend + frontend dev server.
-echo    Please wait for the window to appear...
+echo    Waiting for servers to start...
+timeout /t 5 /nobreak >nul
+
+:: Launch Electron
 echo.
+echo    Launching SpaghettiMap IDE...
+echo    (Close this window to stop all services)
+echo.
+cd /d "%~dp0"
 npx electron .
