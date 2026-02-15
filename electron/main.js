@@ -6,68 +6,71 @@ const http = require('http');
 // ---- Configuration ----
 const DEV_URL = 'http://localhost:5173';
 const BACKEND_PORT = 8000;
+const IS_WIN = process.platform === 'win32';
 let backendProcess = null;
 let frontendProcess = null;
 let mainWindow = null;
 
-// ---- Wait for a URL to respond ----
+// ---- Check if a server is already running ----
+function isServerUp(url) {
+    return new Promise((resolve) => {
+        http.get(url, () => resolve(true)).on('error', () => resolve(false));
+    });
+}
+
+// ---- Wait for server with retries ----
 function waitForServer(url, maxRetries = 30, interval = 1000) {
     return new Promise((resolve, reject) => {
         let attempts = 0;
         const check = () => {
             attempts++;
-            http.get(url, (res) => {
-                resolve();
-            }).on('error', () => {
-                if (attempts >= maxRetries) {
-                    reject(new Error(`Server at ${url} not ready after ${maxRetries} attempts`));
-                } else {
-                    setTimeout(check, interval);
-                }
-            });
+            http.get(url, () => resolve())
+                .on('error', () => {
+                    if (attempts >= maxRetries) reject(new Error(`${url} not ready`));
+                    else setTimeout(check, interval);
+                });
         };
         check();
     });
 }
 
+// ---- Start backend ----
 function startBackend() {
     const backendDir = path.join(__dirname, '..', 'backend');
-    backendProcess = spawn('python', ['-m', 'uvicorn', 'main:app', '--port', String(BACKEND_PORT)], {
+    const cmd = IS_WIN ? 'python' : 'python3';
+    backendProcess = spawn(cmd, ['-m', 'uvicorn', 'main:app', '--port', String(BACKEND_PORT)], {
         cwd: backendDir,
         stdio: 'pipe',
         shell: true,
     });
-
-    backendProcess.stdout.on('data', (data) => {
-        console.log(`[Backend] ${data.toString().trim()}`);
-    });
-    backendProcess.stderr.on('data', (data) => {
-        console.log(`[Backend] ${data.toString().trim()}`);
-    });
-    backendProcess.on('error', (err) => {
-        console.error('Failed to start backend:', err);
-    });
+    backendProcess.stdout.on('data', d => console.log(`[Backend] ${d.toString().trim()}`));
+    backendProcess.stderr.on('data', d => console.log(`[Backend] ${d.toString().trim()}`));
+    backendProcess.on('error', e => console.error('Backend error:', e));
 }
 
+// ---- Start frontend ----
 function startFrontend() {
     const frontendDir = path.join(__dirname, '..', 'frontend');
-    frontendProcess = spawn('npm', ['run', 'dev'], {
+
+    // On Windows, npm scripts can't find local binaries.
+    // Fix: add node_modules/.bin to PATH explicitly.
+    const env = { ...process.env };
+    const binDir = path.join(frontendDir, 'node_modules', '.bin');
+    env.PATH = binDir + (IS_WIN ? ';' : ':') + (env.PATH || '');
+
+    const npmCmd = IS_WIN ? 'npm.cmd' : 'npm';
+    frontendProcess = spawn(npmCmd, ['run', 'dev'], {
         cwd: frontendDir,
         stdio: 'pipe',
-        shell: true,
+        env: env,
+        shell: false, // Don't use shell — npm.cmd handles it
     });
-
-    frontendProcess.stdout.on('data', (data) => {
-        console.log(`[Frontend] ${data.toString().trim()}`);
-    });
-    frontendProcess.stderr.on('data', (data) => {
-        console.log(`[Frontend] ${data.toString().trim()}`);
-    });
-    frontendProcess.on('error', (err) => {
-        console.error('Failed to start frontend:', err);
-    });
+    frontendProcess.stdout.on('data', d => console.log(`[Frontend] ${d.toString().trim()}`));
+    frontendProcess.stderr.on('data', d => console.log(`[Frontend] ${d.toString().trim()}`));
+    frontendProcess.on('error', e => console.error('Frontend error:', e));
 }
 
+// ---- Create window ----
 function createWindow() {
     mainWindow = new BrowserWindow({
         width: 1440,
@@ -101,7 +104,6 @@ function createWindow() {
 }
 
 // ---- IPC Handlers ----
-
 ipcMain.handle('dialog:openFolder', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
         properties: ['openDirectory'],
@@ -117,18 +119,35 @@ ipcMain.handle('app:info', () => ({
 }));
 
 // ---- App lifecycle ----
-
 app.whenReady().then(async () => {
-    console.log('[SpaghettiMap] Starting services...');
-    startBackend();
-    startFrontend();
+    console.log('[SpaghettiMap] Starting...');
 
+    // Check if backend already running
+    const backendUp = await isServerUp(`http://localhost:${BACKEND_PORT}/health`);
+    if (!backendUp) {
+        console.log('[SpaghettiMap] Starting backend...');
+        startBackend();
+    } else {
+        console.log('[SpaghettiMap] Backend already running.');
+    }
+
+    // Check if frontend already running
+    const frontendUp = await isServerUp(DEV_URL);
+    if (!frontendUp) {
+        console.log('[SpaghettiMap] Starting frontend...');
+        startFrontend();
+    } else {
+        console.log('[SpaghettiMap] Frontend already running.');
+    }
+
+    // Wait for frontend
     try {
-        console.log('[SpaghettiMap] Waiting for frontend dev server...');
+        console.log('[SpaghettiMap] Waiting for frontend...');
         await waitForServer(DEV_URL, 30, 1000);
-        console.log('[SpaghettiMap] Frontend ready! Opening window...');
+        console.log('[SpaghettiMap] Frontend ready!');
     } catch (e) {
         console.error('[SpaghettiMap]', e.message);
+        console.log('[SpaghettiMap] Opening window anyway...');
     }
 
     createWindow();
