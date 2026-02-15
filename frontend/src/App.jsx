@@ -51,7 +51,7 @@ export default function App() {
         loadFiles().then((data) => {
             setFileTree(data.tree || []);
             setProjectRoot(data.root);
-            setProjectName(data.root?.split('/').pop() || 'SpaghettiMap');
+            setProjectName(data.root?.split('/').pop() || 'Chillax.AI');
             setShowWelcome(false);
         }).catch(() => { });
     }, []);
@@ -291,7 +291,7 @@ export default function App() {
             <div className="toolbar">
                 <div className="toolbar-logo">
                     <span className="emoji">🍝</span>
-                    <span className="brand">SpaghettiMap</span>
+                    <span className="brand">Chillax.AI</span>
                 </div>
 
                 {/* Project actions */}
@@ -466,7 +466,7 @@ export default function App() {
                     )}
                 </div>
                 <div className="status-bar-section">
-                    <span>SpaghettiMap v0.2</span>
+                    <span>Chillax.AI v0.2</span>
                 </div>
             </div>
         </div>

@@ -1,4 +1,4 @@
-# 🍝 SpaghettiMap
+# 🍝 Chillax.AI
 
 **Offline AI-powered Python IDE** — a standalone desktop app that helps developers understand legacy Python codebases using a local LLM via Ollama.
 
@@ -77,7 +77,7 @@ This starts backend, frontend, and Electron all at once.
 
 ## Demo Flow (3–5 minutes)
 
-1. **Launch the app** → the SpaghettiMap desktop window opens with a 3-pane layout
+1. **Launch the app** → the Chillax.AI desktop window opens with a 3-pane layout
 2. **Click "Analyze Project"** → the bundled sample e-commerce project is scanned
 3. **Explore the Code Map** → switch to the Code Map tab to see modules, functions, and relationships
 4. **Click a file** (e.g., `app/auth.py`) → view the code in the Monaco editor

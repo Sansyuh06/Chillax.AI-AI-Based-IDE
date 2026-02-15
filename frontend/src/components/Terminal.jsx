@@ -64,7 +64,7 @@ export default function Terminal({ visible, projectRoot }) {
             wsRef.current = ws;
 
             ws.onopen = () => {
-                term.writeln('\x1b[36m● SpaghettiMap Terminal\x1b[0m');
+                term.writeln('\x1b[36m● Chillax.AI Terminal\x1b[0m');
                 term.writeln('\x1b[90m  Connected to local shell\x1b[0m');
                 term.writeln('');
             };

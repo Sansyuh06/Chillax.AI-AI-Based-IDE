@@ -1,9 +1,9 @@
 @echo off
-title SpaghettiMap IDE
+title Chillax.AI IDE
 color 0A
 
 echo ============================================
-echo    SpaghettiMap IDE - Starting...
+echo    Chillax.AI IDE - Starting...
 echo ============================================
 echo.
 
@@ -55,7 +55,7 @@ timeout /t 5 /nobreak >nul
 
 :: Launch Electron
 echo.
-echo    Launching SpaghettiMap IDE...
+echo    Launching Chillax.AI IDE...
 echo    (Close this window to stop all services)
 echo.
 cd /d "%~dp0"

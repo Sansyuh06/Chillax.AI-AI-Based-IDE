@@ -1,5 +1,5 @@
 """
-SpaghettiMap — Backend API (Full IDE)
+Chillax.AI — Backend API (Full IDE)
 FastAPI server providing code analysis, AI explanations, file operations,
 integrated terminal via WebSocket, and Python execution.
 """
@@ -25,7 +25,7 @@ from ollama_client import generate, list_models
 # App setup
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="SpaghettiMap API", version="0.2.0")
+app = FastAPI(title="Chillax.AI API", version="0.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -135,7 +135,7 @@ async def new_project(req: NewProjectRequest):
     main_file = os.path.join(full_path, "main.py")
     if not os.path.exists(main_file):
         with open(main_file, "w") as f:
-            f.write('"""\\nNew Python project created with SpaghettiMap.\\n"""\\n\\n\\ndef main():\\n    print("Hello, World!")\\n\\n\\nif __name__ == "__main__":\\n    main()\\n')
+            f.write('"""\\nNew Python project created with Chillax.AI.\\n"""\\n\\n\\ndef main():\\n    print("Hello, World!")\\n\\n\\nif __name__ == "__main__":\\n    main()\\n')
     _project_root = full_path
     _project_graph = None
     _add_recent(full_path)

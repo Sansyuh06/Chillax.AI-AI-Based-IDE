@@ -1,5 +1,5 @@
 /**
- * SpaghettiMap — API Client (Full IDE)
+ * Chillax.AI — API Client (Full IDE)
  * All backend calls go through the Vite dev proxy (/api → localhost:8000).
  */
 

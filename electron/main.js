@@ -29,7 +29,7 @@ function createWindow() {
         height: 900,
         minWidth: 960,
         minHeight: 600,
-        title: 'SpaghettiMap',
+        title: 'Chillax.AI',
         icon: path.join(__dirname, 'icon.png'),
         backgroundColor: '#0d1117',
         autoHideMenuBar: true,
@@ -72,13 +72,13 @@ ipcMain.handle('app:info', () => ({
 
 // ---- App lifecycle ----
 app.whenReady().then(async () => {
-    console.log('[SpaghettiMap] Waiting for frontend dev server...');
+    console.log('[Chillax.AI] Waiting for frontend dev server...');
 
     try {
         await waitForServer(DEV_URL, 30, 1000);
-        console.log('[SpaghettiMap] Frontend ready!');
+        console.log('[Chillax.AI] Frontend ready!');
     } catch (e) {
-        console.error('[SpaghettiMap] Frontend not detected. Start services first:');
+        console.error('[Chillax.AI] Frontend not detected. Start services first:');
         console.error('  cd frontend && npm run dev');
         console.error('  cd backend && python -m uvicorn main:app --port 8000');
     }

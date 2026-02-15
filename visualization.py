@@ -1,8 +1,8 @@
 """
-SpaghettiMap — Animated Code Graph Visualization
+Chillax.AI — Animated Code Graph Visualization
 Pygame animation inspired by learngitbranching.js.org
 
-Demonstrates how SpaghettiMap scans a Python codebase and builds
+Demonstrates how Chillax.AI scans a Python codebase and builds
 a visual graph of modules, functions, imports, and call relationships.
 
 Style: Premium dark mode, smooth eased animations, glow effects,
@@ -355,7 +355,7 @@ class AnimatedEdge:
 
 def build_demo_scenario():
     """
-    Build a step-by-step animation scenario showing how SpaghettiMap
+    Build a step-by-step animation scenario showing how Chillax.AI
     analyzes a Python project — modules appear, then functions,
     then connections form between them.
     """
@@ -377,7 +377,7 @@ def build_demo_scenario():
 
     steps.append({
         "title": "Scanning Python modules...",
-        "subtitle": "SpaghettiMap walks the project directory and discovers .py files",
+        "subtitle": "Chillax.AI walks the project directory and discovers .py files",
         "nodes": modules,
         "edges": [],
     })
@@ -455,7 +455,7 @@ def build_demo_scenario():
 
 def main():
     pygame.init()
-    pygame.display.set_caption("🍝 SpaghettiMap — Code Graph Visualization")
+    pygame.display.set_caption("🍝 Chillax.AI — Code Graph Visualization")
     screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
     clock = pygame.time.Clock()
 
@@ -488,7 +488,7 @@ def main():
 
     # Title & subtitle state
     current_title = "Press SPACE or wait to begin"
-    current_subtitle = "SpaghettiMap — Visualizing code relationships"
+    current_subtitle = "Chillax.AI — Visualizing code relationships"
     title_opacity = 1.0
 
     # Highlight state
@@ -565,7 +565,7 @@ def main():
                     all_edges.clear()
                     highlight_set.clear()
                     current_title = "Press SPACE or wait to begin"
-                    current_subtitle = "SpaghettiMap — Visualizing code relationships"
+                    current_subtitle = "Chillax.AI — Visualizing code relationships"
                 elif event.key == pygame.K_p:
                     paused = not paused
                 elif event.key == pygame.K_h:
@@ -641,7 +641,7 @@ def main():
         screen.blit(top_bar, (0, 0))
 
         # Logo
-        logo_text = font_title.render("🍝 SpaghettiMap", True, COLORS["text"])
+        logo_text = font_title.render("🍝 Chillax.AI", True, COLORS["text"])
         screen.blit(logo_text, (24, 12))
 
         # Step indicator
