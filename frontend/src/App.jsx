@@ -290,7 +290,7 @@ export default function App() {
             {/* ======================== TOOLBAR ======================== */}
             <div className="toolbar">
                 <div className="toolbar-logo">
-                    <span className="emoji">🍝</span>
+                    <span className="emoji">🧊</span>
                     <span className="brand">Chillax.AI</span>
                 </div>
 

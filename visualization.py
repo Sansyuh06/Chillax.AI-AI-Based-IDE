@@ -455,7 +455,7 @@ def build_demo_scenario():
 
 def main():
     pygame.init()
-    pygame.display.set_caption("🍝 Chillax.AI — Code Graph Visualization")
+    pygame.display.set_caption("🧊 Chillax.AI — Code Graph Visualization")
     screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
     clock = pygame.time.Clock()
 
@@ -641,7 +641,7 @@ def main():
         screen.blit(top_bar, (0, 0))
 
         # Logo
-        logo_text = font_title.render("🍝 Chillax.AI", True, COLORS["text"])
+        logo_text = font_title.render("🧊 Chillax.AI", True, COLORS["text"])
         screen.blit(logo_text, (24, 12))
 
         # Step indicator

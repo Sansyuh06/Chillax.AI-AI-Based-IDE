@@ -50,7 +50,7 @@ export default function CodeEditor({
     if (!tabs || tabs.length === 0) {
         return (
             <div className="welcome-screen">
-                <div className="welcome-logo">🍝</div>
+                <div className="welcome-logo">🧊</div>
                 <div className="welcome-title">Chillax.AI</div>
                 <div className="welcome-subtitle">
                     Your AI-powered Python IDE. Open a file from the explorer or create a new project to start coding.

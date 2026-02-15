@@ -1,4 +1,4 @@
-# 🍝 Chillax.AI
+# 🧊 Chillax.AI
 
 **Offline AI-powered Python IDE** — a standalone desktop app that helps developers understand legacy Python codebases using a local LLM via Ollama.
 
