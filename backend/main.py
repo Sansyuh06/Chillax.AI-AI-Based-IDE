@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import json
 from pathlib import Path
 from typing import Optional
@@ -84,9 +85,17 @@ class ExplainRequest(BaseModel):
     selected_code: str
     function_name: Optional[str] = None
     question: Optional[str] = None
+    experience_level: str = "Mid"
+    git_context: Optional[str] = None
 
 class AskProjectRequest(BaseModel):
     question: str
+    experience_level: str = "Mid"
+
+class GenerateDocsRequest(BaseModel):
+    file_path: str
+    selected_code: str
+    function_name: Optional[str] = None
 
 class SaveFileRequest(BaseModel):
     path: str
@@ -135,7 +144,11 @@ async def new_project(req: NewProjectRequest):
     main_file = os.path.join(full_path, "main.py")
     if not os.path.exists(main_file):
         with open(main_file, "w") as f:
-            f.write('"""\\nNew Python project created with Chillax.AI.\\n"""\\n\\n\\ndef main():\\n    print("Hello, World!")\\n\\n\\nif __name__ == "__main__":\\n    main()\\n')
+            # FIX: Use actual newline characters (\n), not escaped literals (\\n).
+            # The original code used \\n inside a single-quoted string, which
+            # writes the two-character sequence backslash+n instead of a real
+            # newline, producing a malformed, single-line Python file.
+            f.write('"""\nNew Python project created with Chillax.AI.\n"""\n\n\ndef main():\n    print("Hello, World!")\n\n\nif __name__ == "__main__":\n    main()\n')
     _project_root = full_path
     _project_graph = None
     _add_recent(full_path)
@@ -199,11 +212,18 @@ async def explain(req: ExplainRequest):
     context_str = "\n".join(context_parts) if context_parts else "No graph context available."
     fn_label = f" (function `{req.function_name}`)" if req.function_name else ""
     user_q = f"\n\nThe developer specifically asks: \"{req.question}\"" if req.question else ""
+    git_ctx = f"\n\n### Recent Git History\n```diff\n{req.git_context}\n```" if req.git_context else ""
+
+    sys_prompt = "You are an expert Python architect explaining code."
+    if req.experience_level == "Junior":
+        sys_prompt = "You are a friendly senior engineer explaining code to a Junior developer. Use simple analogies, avoid jargon where possible, and take time to explain fundamental concepts."
+    elif req.experience_level == "Senior":
+        sys_prompt = "You are a principal engineer speaking to a Senior developer. Skip basic explanations. Focus entirely on architecture, performance, side effects, big-O complexity, and potential race/memory conditions. Use bullet points."
 
     prompt = f"""Here is a code snippet from the file `{rel_path}`{fn_label}.
 
 ### Project Context
-{context_str}
+{context_str}{git_ctx}
 
 ### Code
 ```python
@@ -213,7 +233,7 @@ async def explain(req: ExplainRequest):
 
 Explain what this code does, its inputs and outputs, any side effects, and how it connects to the rest of the project. Be concise but thorough."""
 
-    explanation = await generate(prompt)
+    explanation = await generate(prompt, system=sys_prompt)
     return {"explanation": explanation}
 
 
@@ -251,17 +271,24 @@ async def ask_project(req: AskProjectRequest):
         })
 
     if not snippets:
-        snippets.append("(No directly matching modules found.)")
-        all_mods = [m["module"] for m in _project_graph["modules"]]
-        snippets.append(f"All modules: {', '.join(all_mods)}")
+        sys_prompt = "You are the Chillax.AI assistant, a helpful local AI pair programmer."
+        prompt = f"""A developer says: "{req.question}"
+        
+(Note: They are not asking about specific code, or no codebase files matched their query. Respond directly to their message in a helpful, conversational manner.)"""
+    else:
+        sys_prompt = "You are a senior engineer answering questions."
+        if req.experience_level == "Junior":
+            sys_prompt = "You are explaining the project to a beginner. Use analogies."
+        elif req.experience_level == "Senior":
+            sys_prompt = "You are answering a senior dev. Be brief, focus on architecture."
 
-    project_desc = (
-        f"This Python project has {_project_graph['stats']['total_modules']} modules, "
-        f"{_project_graph['stats']['total_functions']} functions, and "
-        f"{_project_graph['stats']['total_classes']} classes."
-    )
+        project_desc = (
+            f"This Python project has {_project_graph['stats']['total_modules']} modules, "
+            f"{_project_graph['stats']['total_functions']} functions, and "
+            f"{_project_graph['stats']['total_classes']} classes."
+        )
 
-    prompt = f"""A developer is asking about a Python project:
+        prompt = f"""A developer is asking about a Python project:
 
 **Question:** "{req.question}"
 
@@ -273,12 +300,41 @@ async def ask_project(req: AskProjectRequest):
 
 Based on the code above, answer the developer's question. Explain the end-to-end flow, mention key files and functions, and highlight external dependencies or side effects. Use markdown."""
 
-    answer = await generate(prompt)
+    answer = await generate(prompt, system=sys_prompt)
     return {
         "answer": answer,
         "referenced_files": referenced_files,
         "keywords_used": keywords,
     }
+
+@app.get("/git-context")
+async def git_context(path: str = Query(...)):
+    root = _project_root or SAMPLE_PROJECT
+    full = os.path.normpath(os.path.join(root, path))
+    try:
+        result = subprocess.run(
+            ["git", "log", "-p", "-n", "3", "--", full],
+            capture_output=True, text=True, cwd=root, timeout=10
+        )
+        return {"context": result.stdout if result.returncode == 0 else ""}
+    except Exception:
+        return {"context": ""}
+
+@app.post("/generate-docs")
+async def generate_docs(req: GenerateDocsRequest):
+    prompt = f"""Generate a clean, PEP-257 compliant Python docstring for the following code.
+Return ONLY the raw docstring (including the \"\"\" quotes), without any conversational text or markdown code blocks wrapped around it.
+Do not say "Here is the docstring". Just output the \"\"\"docstring\"\"\" directly.
+
+### Code
+```python
+{req.selected_code}
+```"""
+    result = await generate(prompt)
+    text = result.strip()
+    if text.startswith("```python"): text = text.replace("```python", "", 1)
+    if text.endswith("```"): text = text.rsplit("```", 1)[0]
+    return {"docstring": text.strip()}
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +457,12 @@ async def run_python(path: str = Query(...)):
 
     try:
         result = subprocess.run(
-            ["python", full],
+            # FIX: Use sys.executable instead of the bare "python" string.
+            # "python" may not be on PATH on all platforms (especially Linux/macOS
+            # where the binary is "python3"). sys.executable always points to the
+            # exact interpreter that is running this server, guaranteeing the same
+            # environment, installed packages, and Python version are used.
+            [sys.executable, full],
             capture_output=True,
             text=True,
             timeout=30,
@@ -631,7 +692,6 @@ async def terminal_ws(websocket: WebSocket):
     await websocket.accept()
     root = _project_root or SAMPLE_PROJECT
 
-    import sys
     import threading
 
     shell = "cmd.exe" if sys.platform == "win32" else "/bin/bash"
@@ -653,6 +713,14 @@ async def terminal_ws(websocket: WebSocket):
 
     closed = threading.Event()
 
+    # FIX: Capture the running event loop HERE, in the async context, before
+    # the thread starts. In Python 3.10+, calling asyncio.get_event_loop()
+    # from inside a plain thread (with no running loop) raises:
+    #   RuntimeError: There is no current event loop in thread '...'
+    # asyncio.get_running_loop() correctly returns the loop that is driving
+    # this coroutine and is safe to pass into run_coroutine_threadsafe().
+    loop = asyncio.get_running_loop()
+
     def read_stdout():
         """Read process output in a thread and send via WebSocket."""
         try:
@@ -664,7 +732,7 @@ async def terminal_ws(websocket: WebSocket):
                     text = data.decode("utf-8", errors="replace")
                     asyncio.run_coroutine_threadsafe(
                         websocket.send_text(text),
-                        asyncio.get_event_loop()
+                        loop  # use the pre-captured loop reference
                     )
                 except Exception:
                     break

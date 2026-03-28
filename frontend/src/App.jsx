@@ -10,10 +10,11 @@ import AssistantPanel from './components/AssistantPanel';
 import CodeMap from './components/CodeMap';
 import Visualizer from './components/Visualizer';
 import Terminal from './components/Terminal';
+import SettingsModal from './components/SettingsModal';
 import {
     loadFiles, readFile, saveFile, openProject, newProject,
     analyzeProject, explainCode, askProject, runPython,
-    getRecentProjects, healthCheck,
+    getRecentProjects, healthCheck, listModels, getGitContext, generateDocs
 } from './api/client';
 
 export default function App() {
@@ -35,6 +36,10 @@ export default function App() {
     const [terminalVisible, setTerminalVisible] = useState(false);
     const [terminalHeight, setTerminalHeight] = useState(250);
 
+    // ---- Panel Resize ----
+    const [sidebarWidth, setSidebarWidth] = useState(260);
+    const [rightPanelWidth, setRightPanelWidth] = useState(380);
+
     // ---- Status ----
     const [loading, setLoading] = useState(false);
     const [analyzing, setAnalyzing] = useState(false);
@@ -42,11 +47,21 @@ export default function App() {
     const [ollamaOk, setOllamaOk] = useState(true);
     const [recentProjects, setRecentProjects] = useState([]);
     const [showWelcome, setShowWelcome] = useState(true);
+    const [experienceLevel, setExperienceLevel] = useState('Mid');
+    const [models, setModels] = useState(['llama3.1:8b']);
+    const [activeModel, setActiveModel] = useState('llama3.1:8b');
+    const [settingsOpen, setSettingsOpen] = useState(false);
 
     // ---- Boot ----
     useEffect(() => {
         healthCheck().then(() => setOllamaOk(true)).catch(() => setOllamaOk(false));
         getRecentProjects().then((d) => setRecentProjects(d.projects || [])).catch(() => { });
+        listModels().then(data => {
+            if (data.models && data.models.length > 0) {
+                setModels(data.models);
+                setActiveModel(data.models[0]);
+            }
+        }).catch(() => {});
         // Auto-load sample project
         loadFiles().then((data) => {
             setFileTree(data.tree || []);
@@ -218,19 +233,30 @@ export default function App() {
         }]);
         setLoading(true);
         try {
-            const data = await explainCode({ filePath: activeTab, selectedCode: selectedText });
+            let gitCtx = null;
+            try {
+                const gitRes = await getGitContext(activeTab);
+                if (gitRes.context) gitCtx = gitRes.context;
+            } catch(e) {}
+
+            const data = await explainCode({ 
+                filePath: activeTab, 
+                selectedCode: selectedText,
+                experienceLevel,
+                gitContext: gitCtx
+            });
             setMessages((prev) => [...prev, { role: 'assistant', content: data.explanation }]);
         } catch (err) {
             setMessages((prev) => [...prev, { role: 'system', content: `❌ ${err.message}` }]);
         }
         setLoading(false);
-    }, [activeTab]);
+    }, [activeTab, experienceLevel]);
 
     const handleSendMessage = useCallback(async (text) => {
         setMessages((prev) => [...prev, { role: 'user', content: text }]);
         setLoading(true);
         try {
-            const data = await askProject(text);
+            const data = await askProject(text, experienceLevel);
             setMessages((prev) => [...prev, {
                 role: 'assistant', content: data.answer, referencedFiles: data.referenced_files,
             }]);
@@ -238,7 +264,24 @@ export default function App() {
             setMessages((prev) => [...prev, { role: 'system', content: `❌ ${err.message}` }]);
         }
         setLoading(false);
-    }, []);
+    }, [experienceLevel]);
+
+    const handleMapAskAI = useCallback((text) => {
+        setRightTab('assistant');
+        handleSendMessage(text);
+    }, [handleSendMessage]);
+
+    const handleGenerateDocs = useCallback(async (selectedText) => {
+        if (!activeTab) return null;
+        setMessages(prev => [...prev, { role: 'assistant', content: `Generating docstring for selection in \`${activeTab.split('/').pop()}\`...` }]);
+        try {
+            const data = await generateDocs({ filePath: activeTab, selectedCode: selectedText });
+            return data.docstring;
+        } catch (err) {
+            setMessages(prev => [...prev, { role: 'system', content: `❌ Failed to generate docs: ${err.message}` }]);
+            return null;
+        }
+    }, [activeTab]);
 
     // ---- Run Python ----
     const handleRun = useCallback(async () => {
@@ -280,6 +323,27 @@ export default function App() {
         document.addEventListener('mousemove', onMove);
         document.addEventListener('mouseup', onUp);
     }, [terminalHeight]);
+
+    // ---- Splitter dragging ----
+    const startDragLeft = useCallback((e) => {
+        e.preventDefault();
+        const startX = e.clientX;
+        const startW = sidebarWidth;
+        const onMove = (ev) => setSidebarWidth(Math.max(150, Math.min(600, startW + (ev.clientX - startX))));
+        const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+    }, [sidebarWidth]);
+
+    const startDragRight = useCallback((e) => {
+        e.preventDefault();
+        const startX = e.clientX;
+        const startW = rightPanelWidth;
+        const onMove = (ev) => setRightPanelWidth(Math.max(200, Math.min(800, startW - (ev.clientX - startX))));
+        const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+    }, [rightPanelWidth]);
 
     // ---- Current tab info for status bar ----
     const currentTab = tabs.find((t) => t.path === activeTab);
@@ -332,7 +396,8 @@ export default function App() {
                     <TerminalSquare size={15} />
                 </button>
 
-                <div className="toolbar-status">
+                <div className="toolbar-status" style={{ cursor: 'pointer' }} onClick={() => setSettingsOpen(true)}>
+                    <Settings size={14} style={{ marginRight: 6 }} />
                     <span className={`status-dot${ollamaOk ? '' : ' disconnected'}`} />
                     {ollamaOk ? 'Ollama' : 'Offline'}
                 </div>
@@ -341,7 +406,7 @@ export default function App() {
             {/* ======================== MAIN AREA ======================== */}
             <div className="main-area">
                 {/* Left — File Explorer */}
-                <div className="panel panel-sidebar">
+                <div className="panel panel-sidebar" style={{ width: sidebarWidth, flexShrink: 0, minWidth: 150 }}>
                     <div className="panel-header">
                         <FolderSearch size={16} className="panel-header-icon" />
                         EXPLORER
@@ -378,8 +443,11 @@ export default function App() {
                     )}
                 </div>
 
+                {/* Left Splitter */}
+                <div className="vertical-splitter" onMouseDown={startDragLeft} />
+
                 {/* Center — Editor + Terminal */}
-                <div className="panel panel-editor">
+                <div className="panel panel-editor" style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ flex: 1, minHeight: 0 }}>
                         <CodeEditor
                             tabs={tabs}
@@ -389,6 +457,7 @@ export default function App() {
                             onContentChange={handleContentChange}
                             onSave={handleSave}
                             onExplainSelection={handleExplainSelection}
+                            onGenerateDocs={handleGenerateDocs}
                             onRun={handleRun}
                             saving={saving}
                         />
@@ -415,8 +484,11 @@ export default function App() {
                     )}
                 </div>
 
+                {/* Right Splitter */}
+                <div className="vertical-splitter" onMouseDown={startDragRight} />
+
                 {/* Right — AI / Code Map / Visualize */}
-                <div className="panel panel-right">
+                <div className="panel panel-right" style={{ width: rightPanelWidth, flexShrink: 0, minWidth: 200 }}>
                     <div className="tabs">
                         <button className={`tab${rightTab === 'assistant' ? ' active' : ''}`} onClick={() => setRightTab('assistant')}>
                             <MessageSquare size={14} className="tab-icon" /> Assistant
@@ -435,12 +507,18 @@ export default function App() {
                                 onSendMessage={handleSendMessage}
                                 loading={loading}
                                 onFileClick={handleFileSelect}
+                                models={models}
+                                activeModel={activeModel}
+                                onModelChange={setActiveModel}
+                                experienceLevel={experienceLevel}
+                                onExperienceChange={setExperienceLevel}
                             />
                         ) : rightTab === 'codemap' ? (
                             <CodeMap
                                 graph={graph}
                                 onFileSelect={handleFileSelect}
                                 onFunctionClick={handleFunctionClick}
+                                onAskAI={handleMapAskAI}
                             />
                         ) : (
                             <Visualizer activeFile={activeTab} />
@@ -469,6 +547,16 @@ export default function App() {
                     <span>Chillax.AI v0.2</span>
                 </div>
             </div>
+
+            <SettingsModal 
+                isOpen={settingsOpen}
+                onClose={() => setSettingsOpen(false)}
+                models={models}
+                activeModel={activeModel}
+                onModelChange={setActiveModel}
+                experienceLevel={experienceLevel}
+                onExperienceChange={setExperienceLevel}
+            />
         </div>
     );
 }

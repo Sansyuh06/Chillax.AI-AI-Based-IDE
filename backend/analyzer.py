@@ -6,6 +6,7 @@ Walks a directory, parses every .py file, and builds a JSON graph of:
   • functions / classes
   • imports
   • internal call relationships
+  • **NEW**: in_degree (dependency heat), dead code flags, and heuristic bug scanner.
 """
 
 from __future__ import annotations
@@ -38,8 +39,34 @@ class _FileVisitor(ast.NodeVisitor):
         self.calls: list[str] = []
         self._current_func: str | None = None
 
+    def _get_max_depth(self, node: ast.AST, current_depth: int = 0) -> int:
+        if not hasattr(node, "body") and not hasattr(node, "orelse"):
+            return current_depth
+        
+        max_d = current_depth
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.If, ast.For, ast.While, ast.With, ast.Try, ast.ExceptHandler)):
+                d = self._get_max_depth(child, current_depth + 1)
+                max_d = max(max_d, d)
+            else:
+                d = self._get_max_depth(child, current_depth)
+                max_d = max(max_d, d)
+        return max_d
+
     # --- functions --------------------------------------------------------
     def visit_FunctionDef(self, node: ast.FunctionDef):
+        length = (node.end_lineno or node.lineno) - node.lineno
+        args_count = len(node.args.args)
+        max_depth = self._get_max_depth(node)
+        
+        issues = []
+        if length > 50:
+            issues.append(f"God Function (>{50} lines)")
+        if args_count > 6:
+            issues.append(f"Too many arguments ({args_count})")
+        if max_depth > 4:
+            issues.append(f"Deep Nesting (depth {max_depth})")
+
         info = {
             "name": node.name,
             "start_line": node.lineno,
@@ -47,6 +74,11 @@ class _FileVisitor(ast.NodeVisitor):
             "args": [a.arg for a in node.args.args],
             "decorators": [self._decorator_name(d) for d in node.decorator_list],
             "docstring": ast.get_docstring(node) or "",
+            "issues": issues,
+            "length": length,
+            "max_depth": max_depth,
+            "in_degree": 0, # Calculated later
+            "is_dead": False # Calculated later
         }
         self.functions.append(info)
         old = self._current_func
@@ -54,11 +86,16 @@ class _FileVisitor(ast.NodeVisitor):
         self.generic_visit(node)
         self._current_func = old
 
-    visit_AsyncFunctionDef = visit_FunctionDef  # treat async the same
+    visit_AsyncFunctionDef = visit_FunctionDef
 
     # --- classes ----------------------------------------------------------
     def visit_ClassDef(self, node: ast.ClassDef):
         methods: list[dict] = []
+        issues = []
+        length = (node.end_lineno or node.lineno) - node.lineno
+        if length > 200:
+             issues.append(f"God Class (>{200} lines)")
+
         for item in ast.walk(node):
             if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 methods.append({
@@ -68,14 +105,22 @@ class _FileVisitor(ast.NodeVisitor):
                     "args": [a.arg for a in item.args.args],
                     "docstring": ast.get_docstring(item) or "",
                 })
+        
         self.classes.append({
             "name": node.name,
             "start_line": node.lineno,
             "end_line": node.end_lineno or node.lineno,
             "methods": methods,
             "docstring": ast.get_docstring(node) or "",
+            "issues": issues,
+            "length": length,
+            "in_degree": 0, # Calculated later
+            "is_dead": False
         })
-        self.generic_visit(node)
+        # FIX: Do NOT call self.generic_visit(node) here.
+        # Calling it would cause visit_FunctionDef to fire for every method
+        # inside the class, adding them to self.functions a second time and
+        # inflating function counts / dead-code analysis results.
 
     # --- imports ----------------------------------------------------------
     def visit_Import(self, node: ast.Import):
@@ -137,7 +182,7 @@ def analyze_file(filepath: str, root: str) -> dict[str, Any]:
             "classes": [],
             "imports": [],
             "calls": [],
-            "error": "SyntaxError – could not parse",
+            "issues": ["SyntaxError – could not parse"],
         }
 
     visitor = _FileVisitor(source)
@@ -149,6 +194,7 @@ def analyze_file(filepath: str, root: str) -> dict[str, Any]:
         "classes": visitor.classes,
         "imports": visitor.imports,
         "calls": list(set(visitor.calls)),
+        "issues": []
     }
 
 
@@ -156,10 +202,12 @@ def analyze_project(root: str) -> dict[str, Any]:
     """Walk *root*, analyze every .py file, and return a project graph."""
     root = os.path.abspath(root)
     modules: list[dict] = []
-    all_functions: dict[str, str] = {}  # func_name -> module
+    
+    # Track items for establishing relationships
+    # Maps function/class name to a list of (module_id, obj_dict)
+    all_exports: dict[str, list[tuple[str, dict]]] = {}
 
     for dirpath, _dirs, files in os.walk(root):
-        # skip hidden / venv / __pycache__
         parts = Path(dirpath).parts
         if any(p.startswith(".") or p in ("__pycache__", "venv", "node_modules") for p in parts):
             continue
@@ -169,21 +217,41 @@ def analyze_project(root: str) -> dict[str, Any]:
             fullpath = os.path.join(dirpath, fname)
             info = analyze_file(fullpath, root)
             modules.append(info)
-            for fn in info["functions"]:
-                all_functions[fn["name"]] = info["module"]
 
-    # Build edges: for each call in a module, if we know the target module, add edge
+            # Register exports for linking dependencies
+            mod_id = info["module"]
+            for fn in info["functions"]:
+                all_exports.setdefault(fn["name"], []).append((mod_id, fn))
+            for cls in info["classes"]:
+                all_exports.setdefault(cls["name"], []).append((mod_id, cls))
+
     edges: list[dict] = []
+    # Build edges and calculate in_degree
     for mod in modules:
         for call_name in mod.get("calls", []):
             base = call_name.split(".")[0]
-            target_module = all_functions.get(base)
-            if target_module and target_module != mod["module"]:
-                edges.append({
-                    "source": mod["module"],
-                    "target": target_module,
-                    "label": call_name,
-                })
+            # Simple heuristic: if the base name matches a known export
+            targets = all_exports.get(base, [])
+            for target_mod, target_obj in targets:
+                if target_mod != mod["module"]:
+                    # Inter-module edge
+                    edges.append({
+                        "source": mod["module"],
+                        "target": target_mod,
+                        "label": call_name,
+                    })
+                # Bump in_degree for the specific function/class
+                target_obj["in_degree"] += 1
+
+    # Mark dead code (0 in_degree) EXCEPT special functions 
+    MAGIC_ENTRY = {"main", "run", "setup", "__init__"}
+    for mod in modules:
+        for fn in mod["functions"]:
+            if fn["in_degree"] == 0 and fn["name"] not in MAGIC_ENTRY and not fn["name"].startswith("__"):
+                fn["is_dead"] = True
+        for cls in mod["classes"]:
+            if cls["in_degree"] == 0 and not cls["name"].startswith("__"):
+                cls["is_dead"] = True
 
     return {
         "root": root.replace("\\", "/"),
@@ -198,7 +266,6 @@ def analyze_project(root: str) -> dict[str, Any]:
 
 
 def search_graph(graph: dict, keywords: list[str]) -> list[dict]:
-    """Find modules / functions whose names match any keyword (case‑insensitive)."""
     results: list[dict] = []
     kw_lower = [k.lower() for k in keywords]
     for mod in graph.get("modules", []):
@@ -218,7 +285,6 @@ def search_graph(graph: dict, keywords: list[str]) -> list[dict]:
 
 
 def get_file_content(filepath: str) -> str:
-    """Read a file and return its contents."""
     try:
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
             return f.read()

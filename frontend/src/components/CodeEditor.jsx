@@ -1,6 +1,6 @@
 import React, { useRef, useCallback, useMemo } from 'react';
 import Editor from '@monaco-editor/react';
-import { Save, Sparkles, Play, X, Circle } from 'lucide-react';
+import { Save, Sparkles, Play, X, Circle, Wand2 } from 'lucide-react';
 import { getLanguage } from '../api/client';
 
 /**
@@ -14,6 +14,7 @@ export default function CodeEditor({
     onContentChange,
     onSave,
     onExplainSelection,
+    onGenerateDocs,
     onRun,
     saving,
 }) {
@@ -45,6 +46,26 @@ export default function CodeEditor({
         }
         onExplainSelection?.(selectedText);
     }, [onExplainSelection]);
+
+    const handleDocs = useCallback(async () => {
+        const editor = editorRef.current;
+        if (!editor) return;
+        const selection = editor.getSelection();
+        const selectedText = editor.getModel().getValueInRange(selection);
+        if (!selectedText.trim()) {
+            alert('Select a function or class first to generate docs.');
+            return;
+        }
+        const docstring = await onGenerateDocs?.(selectedText);
+        if (docstring) {
+            try {
+                await navigator.clipboard.writeText(docstring);
+                alert('✨ Docstring generated and copied to clipboard! Paste it inside your function.');
+            } catch(e) {
+                alert('✨ Generated Docstring:\n\n' + docstring);
+            }
+        }
+    }, [onGenerateDocs]);
 
     // No tabs open → welcome screen
     if (!tabs || tabs.length === 0) {
@@ -102,6 +123,12 @@ export default function CodeEditor({
                         <Save size={14} />
                         {saving ? 'Saving…' : 'Save'}
                     </button>
+                    {language === 'python' && (
+                        <button className="btn btn-secondary" onClick={handleDocs} title="Generate Docstring">
+                            <Wand2 size={14} />
+                            Generate Docs
+                        </button>
+                    )}
                     {language === 'python' && (
                         <button className="btn btn-secondary" onClick={onRun} title="Run Python file">
                             <Play size={14} />

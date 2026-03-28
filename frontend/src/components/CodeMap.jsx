@@ -1,420 +1,420 @@
-import React, { useRef, useEffect, useCallback, useState } from 'react';
-import { RotateCcw, ZoomIn, ZoomOut, Play } from 'lucide-react';
+import React, { useCallback, useMemo, useEffect, useState } from 'react';
+import {
+  ReactFlow,
+  MiniMap,
+  Controls,
+  Background,
+  useNodesState,
+  useEdgesState,
+  MarkerType,
+  Handle,
+  Position,
+  Panel,
+  getOutgoers,
+  getIncomers
+} from '@xyflow/react';
+import '@xyflow/react/dist/style.css';
+import dagre from 'dagre';
+import { Search, Info, X, Layout, Maximize, Cpu, Flame, Ghost, Bug } from 'lucide-react';
+import { explainCode } from '../api/client';
 
-/* ────────────────────────── EASING ────────────────────────── */
-const ease = {
-    outCubic: t => 1 - (1 - t) ** 3,
-    outElastic: t => {
-        if (t === 0 || t === 1) return t;
-        return Math.pow(2, -10 * t) * Math.sin((t - 0.075) * (2 * Math.PI) / 0.3) + 1;
-    },
-    outBack: t => { const c = 2.70158; return 1 + (c + 1) * (t - 1) ** 3 + c * (t - 1) ** 2; },
+/* --- CUSTOM NODES (MEMOIZED) --- */
+
+const renderBadges = (data) => {
+  if (data.bugs && data.bugs.length > 0) {
+    return <div className="bug-badge" title={data.bugs.join(', ')}>{data.bugs.length}</div>;
+  }
+  return null;
 };
-const lerp = (a, b, t) => a + (b - a) * t;
 
-/* ────────────────────────── PARTICLES ────────────────────────── */
-class Particle {
-    constructor(x, y, color, vx, vy, life, size) {
-        Object.assign(this, { x, y, color, vx, vy, life, maxLife: life, size, alive: true });
-    }
-    update(dt) {
-        this.x += this.vx * dt * 60; this.y += this.vy * dt * 60;
-        this.life -= dt; if (this.life <= 0) this.alive = false;
-    }
-    draw(ctx) {
-        if (!this.alive) return;
-        const a = Math.max(0, this.life / this.maxLife);
-        ctx.globalAlpha = a * 0.5;
-        ctx.fillStyle = this.color;
-        ctx.beginPath(); ctx.arc(this.x, this.y, Math.max(0.5, this.size * a), 0, Math.PI * 2); ctx.fill();
-        ctx.globalAlpha = 1;
-    }
-}
+const getClassNames = (data) => {
+  let classes = data.dimmed ? 'dimmed ' : '';
+  if (data.heatmapClass) classes += ` ${data.heatmapClass}`;
+  if (data.deadCodeClass) classes += ` ${data.deadCodeClass}`;
+  return classes.trim();
+};
 
-class Particles {
-    constructor() { this.list = []; }
-    emit(x, y, c, n = 4, s = 2, l = 0.5, sz = 2) {
-        for (let i = 0; i < n; i++)
-            this.list.push(new Particle(x, y, c, (Math.random() - .5) * s * 2, (Math.random() - .5) * s * 2, l + Math.random() * .2, sz));
-    }
-    update(dt) { this.list = this.list.filter(p => p.alive); this.list.forEach(p => p.update(dt)); }
-    draw(ctx) { this.list.forEach(p => p.draw(ctx)); }
-}
+const getOpacity = (data) => {
+  if (data.dimmed || data.deadCodeClass === 'node-alive') return 0.2;
+  return 1;
+};
 
-/* ────────────────────── NODE COLORS ────────────────────── */
-const NCOL = { module: '#58a6ff', function: '#bc8cff', class: '#d29922' };
-const NICON = { module: 'M', function: 'ƒ', class: 'C' };
+const ModuleNode = React.memo(({ data }) => (
+  <div className={`rf-node-module ${getClassNames(data)}`} style={{ opacity: getOpacity(data) }}>
+    {renderBadges(data)}
+    <Handle type="target" position={Position.Top} />
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <span style={{ color: 'var(--accent-purple)' }}>📦</span>
+      {data.label}
+    </div>
+    <Handle type="source" position={Position.Bottom} />
+  </div>
+));
 
-/* ────────────────────── GRAPH NODE ────────────────────── */
-class GNode {
-    constructor(id, label, type, x, y, delay, r = 22) {
-        Object.assign(this, {
-            id, label, type, color: NCOL[type] || '#58a6ff',
-            tx: x, ty: y, x, y: y - 50,
-            r, cr: 0, delay, t: 0, dur: 0.6,
-            visible: false, hover: false, scale: 0, opacity: 0, pulse: Math.random() * 6,
+const ClassNode = React.memo(({ data }) => (
+  <div className={`rf-node-class ${getClassNames(data)}`} style={{ opacity: getOpacity(data) }}>
+    {renderBadges(data)}
+    <Handle type="target" position={Position.Top} />
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <span style={{ color: 'var(--accent-cyan)' }}>C</span>
+      {data.label}
+    </div>
+    <Handle type="source" position={Position.Bottom} />
+  </div>
+));
+
+const FunctionNode = React.memo(({ data }) => (
+  <div className={`rf-node-function ${getClassNames(data)}`} style={{ opacity: getOpacity(data) }}>
+    {renderBadges(data)}
+    <Handle type="target" position={Position.Top} />
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <span style={{ color: 'var(--accent-green)' }}>ƒ</span>
+      {data.label}
+    </div>
+    <Handle type="source" position={Position.Bottom} />
+  </div>
+));
+
+const nodeTypes = {
+  module: ModuleNode,
+  class: ClassNode,
+  function: FunctionNode,
+};
+
+/* --- DAGRE LAYOUT --- */
+const getLayoutedElements = (nodes, edges, direction = 'TB') => {
+  const dagreGraph = new dagre.graphlib.Graph();
+  dagreGraph.setDefaultEdgeLabel(() => ({}));
+
+  dagreGraph.setGraph({ rankdir: direction, nodesep: 60, ranksep: 120 });
+
+  nodes.forEach((node) => {
+    const width = node.type === 'module' ? 180 : (node.type === 'class' ? 140 : 120);
+    const height = 40;
+    dagreGraph.setNode(node.id, { width, height });
+  });
+
+  edges.forEach((edge) => {
+    dagreGraph.setEdge(edge.source, edge.target);
+  });
+
+  dagre.layout(dagreGraph);
+
+  nodes.forEach((node) => {
+    const nodeWithPosition = dagreGraph.node(node.id);
+    node.targetPosition = direction === 'TB' ? Position.Top : Position.Left;
+    node.sourcePosition = direction === 'TB' ? Position.Bottom : Position.Right;
+    node.position = {
+      x: nodeWithPosition.x - nodeWithPosition.width / 2,
+      y: nodeWithPosition.y - nodeWithPosition.height / 2,
+    };
+    return node;
+  });
+
+  return { nodes, edges };
+};
+
+/* --- MAIN COMPONENT --- */
+export default function CodeMap({ graph, onFileSelect, onFunctionClick, onAskAI }) {
+  const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedNodeData, setSelectedNodeData] = useState(null);
+
+  // Toggles
+  const [heatmap, setHeatmap] = useState(false);
+  const [deadCode, setDeadCode] = useState(false);
+  const [bugScanner, setBugScanner] = useState(false);
+
+  // Initialize nodes without styling filters
+  const [rawNodes, setRawNodes] = useState([]);
+
+  // Re-build graph when backend data changes
+  useEffect(() => {
+    if (!graph || !graph.modules) return;
+
+    const newNodes = [];
+    const newEdges = [];
+    const nodeMap = new Set();
+
+    // 1. Create nodes
+    graph.modules.forEach((mod) => {
+      const modId = mod.module;
+      const modName = modId.split('/').pop();
+      nodeMap.add(modId);
+      newNodes.push({
+        id: modId,
+        type: 'module',
+        position: { x: 0, y: 0 },
+        data: { label: modName, fullPath: modId, rawType: 'Module', details: mod },
+      });
+
+      // Child classes
+      (mod.classes || []).forEach((cls) => {
+        const clsId = `${modId}::${cls.name}`;
+        nodeMap.add(clsId);
+        newNodes.push({
+          id: clsId,
+          type: 'class',
+          position: { x: 0, y: 0 },
+          data: { label: cls.name, fullPath: modId, parent: modId, rawType: 'Class', details: cls },
         });
-    }
-    start() { this.visible = true; this.t = 0; }
-    update(dt, mx, my) {
-        if (!this.visible) return;
-        this.t += dt;
-        const p = Math.min(1, this.t / this.dur);
-        this.y = lerp(this.ty - 50, this.ty, ease.outBack(p));
-        this.x = this.tx;
-        this.scale = ease.outElastic(p);
-        this.cr = this.r * this.scale;
-        this.opacity = Math.min(1, p * 3);
-        this.pulse += dt * 2;
-        const dx = mx - this.x, dy = my - this.y;
-        this.hover = dx * dx + dy * dy <= (this.cr + 6) ** 2;
-    }
-    draw(ctx) {
-        if (!this.visible || this.opacity < 0.01) return;
-        const r = Math.max(1, this.cr), { x, y } = this;
+        newEdges.push({
+          id: `e-${modId}-${clsId}`,
+          source: modId,
+          target: clsId,
+          type: 'smoothstep',
+          animated: false,
+          style: { stroke: 'var(--border-accent)', strokeWidth: 1 }
+        });
+      });
 
-        // Glow
-        if (this.hover) {
-            const g = ctx.createRadialGradient(x, y, r * 0.3, x, y, r + 16);
-            g.addColorStop(0, this.color + '25'); g.addColorStop(1, this.color + '00');
-            ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r + 16, 0, Math.PI * 2); ctx.fill();
-        }
-
-        // Circle fill
-        ctx.globalAlpha = this.opacity * 0.9;
-        ctx.fillStyle = this.hover ? '#2d364a' : '#1c2333';
-        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
-        ctx.strokeStyle = this.color + (this.hover ? 'ff' : '88');
-        ctx.lineWidth = 2; ctx.stroke();
-
-        // Icon
-        ctx.globalAlpha = this.opacity;
-        ctx.fillStyle = this.color;
-        ctx.font = `bold ${Math.max(10, r * 0.65 | 0)}px sans-serif`;
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText(NICON[this.type] || '?', x, y);
-
-        // Label
-        ctx.font = 'bold 10px sans-serif';
-        ctx.fillStyle = '#e6edf3';
-        ctx.fillText(this.label, x, y + r + 12);
-        ctx.font = '9px sans-serif';
-        ctx.fillStyle = '#6e7681';
-        ctx.fillText(this.type, x, y + r + 24);
-        ctx.globalAlpha = 1;
-    }
-}
-
-/* ────────────────────── GRAPH EDGE ────────────────────── */
-class GEdge {
-    constructor(src, tgt, label, color, delay) {
-        Object.assign(this, { src, tgt, label, color: color || '#58a6ff', delay, t: 0, dur: 0.5, visible: false, progress: 0 });
-    }
-    start() { this.visible = true; this.t = 0; }
-    update(dt) {
-        if (!this.visible) return;
-        this.t += dt;
-        this.progress = Math.min(1, ease.outCubic(Math.min(1, this.t / this.dur)));
-    }
-    draw(ctx, particles) {
-        if (!this.visible || this.progress < 0.01) return;
-        const { src, tgt } = this;
-        const sx = src.x, sy = src.y, ex = tgt.x, ey = tgt.y;
-
-        // Offset start/end to node edges
-        const angle = Math.atan2(ey - sy, ex - sx);
-        const x1 = sx + Math.cos(angle) * src.cr;
-        const y1 = sy + Math.sin(angle) * src.cr;
-        const x2 = ex - Math.cos(angle) * tgt.cr;
-        const y2 = ey - Math.sin(angle) * tgt.cr;
-
-        const cx = lerp(x1, x2, this.progress);
-        const cy = lerp(y1, y2, this.progress);
-
-        ctx.globalAlpha = Math.min(1, this.progress * 2) * 0.6;
-        ctx.strokeStyle = this.color;
-        ctx.lineWidth = 1.5;
-        ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(cx, cy); ctx.stroke();
-
-        // Arrow
-        if (this.progress > 0.4) {
-            const al = 8;
-            ctx.fillStyle = this.color;
-            ctx.beginPath();
-            ctx.moveTo(cx, cy);
-            ctx.lineTo(cx - al * Math.cos(angle - 0.4), cy - al * Math.sin(angle - 0.4));
-            ctx.lineTo(cx - al * Math.cos(angle + 0.4), cy - al * Math.sin(angle + 0.4));
-            ctx.closePath(); ctx.fill();
-        }
-
-        // Particles at tip
-        if (this.progress > 0.1 && this.progress < 0.9 && Math.random() < 0.2)
-            particles.emit(cx, cy, this.color, 1, 1, 0.3, 1.5);
-
-        ctx.globalAlpha = 1;
-    }
-}
-
-/* ────────────────────── FORCE-DIRECTED LAYOUT ────────────────────── */
-function forceLayout(graph, W, H) {
-    const nodes = [], edges = [], nodeMap = {};
-    if (!graph?.modules) return { nodes, edges };
-
-    const mods = graph.modules;
-    const gEdges = graph.edges || [];
-
-    // 1. Create module nodes with initial positions in a circle
-    const cx = W / 2, cy = H / 2;
-    const baseR = Math.min(W, H) * 0.32;
-
-    mods.forEach((mod, i) => {
-        const angle = (i / mods.length) * Math.PI * 2 - Math.PI / 2;
-        const x = cx + Math.cos(angle) * baseR;
-        const y = cy + Math.sin(angle) * baseR;
-        const n = new GNode(mod.module, mod.module.split('/').pop().replace('.py', ''), 'module', x, y, i * 0.1, 24);
-        nodes.push(n);
-        nodeMap[mod.module] = n;
+      // Child functions
+      (mod.functions || []).forEach((fn) => {
+        const fnId = `${modId}::${fn.name}`;
+        nodeMap.add(fnId);
+        newNodes.push({
+          id: fnId,
+          type: 'function',
+          position: { x: 0, y: 0 },
+          data: { label: fn.name, fullPath: modId, parent: modId, rawType: 'Function', details: fn },
+        });
+        newEdges.push({
+          id: `e-${modId}-${fnId}`,
+          source: modId,
+          target: fnId,
+          type: 'smoothstep',
+          animated: false,
+          style: { stroke: 'var(--border-accent)', strokeWidth: 1 }
+        });
+      });
     });
 
-    // 2. Create child nodes (max 3 per module) orbiting their parent
-    mods.forEach((mod, i) => {
-        const parent = nodeMap[mod.module];
-        const children = [
-            ...(mod.functions || []).slice(0, 2).map(f => ({ name: f.name, type: 'function' })),
-            ...(mod.classes || []).slice(0, 1).map(c => ({ name: c.name, type: 'class' })),
-        ];
-        children.forEach((ch, j) => {
-            const a = (j / Math.max(children.length, 1)) * Math.PI * 2 - Math.PI / 2;
-            const or = 50;
-            const fx = parent.tx + Math.cos(a) * or;
-            const fy = parent.ty + Math.sin(a) * or;
-            const cn = new GNode(`${mod.module}::${ch.name}`, ch.name, ch.type, fx, fy, i * 0.1 + (j + 1) * 0.06, 14);
-            nodes.push(cn);
-            nodeMap[`${mod.module}::${ch.name}`] = cn;
-            edges.push(new GEdge(parent, cn, '', '#30363d55', i * 0.1 + (j + 1) * 0.08));
+    // 2. Create interactive edges (imports/calls)
+    (graph.edges || []).forEach((edgeData, i) => {
+      if (nodeMap.has(edgeData.source) && nodeMap.has(edgeData.target)) {
+        newEdges.push({
+          id: `r-${i}`,
+          source: edgeData.source,
+          target: edgeData.target,
+          type: 'default',
+          animated: true,
+          label: edgeData.label,
+          labelStyle: { fill: 'var(--text-muted)', fontSize: 10, fontFamily: 'var(--font-mono)' },
+          labelBgStyle: { fill: 'var(--bg-surface)', fillOpacity: 0.8 },
+          style: { stroke: 'var(--accent-base)', strokeWidth: 2 },
+          markerEnd: { type: MarkerType.ArrowClosed, width: 15, height: 15, color: 'var(--accent-base)' },
         });
+      }
     });
 
-    // 3. Run simple force simulation to spread nodes
-    const positions = nodes.map(n => ({ x: n.tx, y: n.ty }));
-    const REPULSION = 3000;
-    const SPRING = 0.005;
-    const DAMPING = 0.85;
-    const velocities = nodes.map(() => ({ x: 0, y: 0 }));
+    const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(newNodes, newEdges);
+    setRawNodes(layoutedNodes);
+    setEdges(layoutedEdges);
+  }, [graph, setEdges]);
 
-    for (let iter = 0; iter < 80; iter++) {
-        // Repulsion between all nodes
-        for (let i = 0; i < positions.length; i++) {
-            for (let j = i + 1; j < positions.length; j++) {
-                let dx = positions[i].x - positions[j].x;
-                let dy = positions[i].y - positions[j].y;
-                let dist = Math.sqrt(dx * dx + dy * dy) || 1;
-                let minDist = (nodes[i].r + nodes[j].r) * 2.5;
-                if (dist < minDist) dist = minDist;
-                const force = REPULSION / (dist * dist);
-                const fx = (dx / dist) * force;
-                const fy = (dy / dist) * force;
-                velocities[i].x += fx; velocities[i].y += fy;
-                velocities[j].x -= fx; velocities[j].y -= fy;
-            }
+  // Apply filters/toggles (Search, Heatmap, Dead Code, Bugs)
+  useEffect(() => {
+    if (!rawNodes.length) return;
+
+    setNodes((nds) => {
+      // For initial load, map rawNodes directly if nds is empty. Otherwise apply updates to current nds to preserve positions
+      const baseNodes = nds.length === rawNodes.length ? nds : rawNodes;
+      
+      return baseNodes.map((n) => {
+        const details = n.data.details;
+        const match = searchQuery === '' || n.data.label.toLowerCase().includes(searchQuery.toLowerCase());
+        
+        let heatmapClass = null;
+        if (heatmap && details) {
+          const inDegree = details.in_degree || 0;
+          if (inDegree > 5) heatmapClass = 'node-heatmap-hot';
+          else if (inDegree > 2) heatmapClass = 'node-heatmap-warm';
+          else heatmapClass = 'node-heatmap-cool';
         }
 
-        // Spring attraction to keep connected nodes together (but not too close)
-        edges.forEach(e => {
-            const si = nodes.indexOf(e.src), ti = nodes.indexOf(e.tgt);
-            if (si < 0 || ti < 0) return;
-            const dx = positions[ti].x - positions[si].x;
-            const dy = positions[ti].y - positions[si].y;
-            const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-            const targetDist = 70;
-            const force = (dist - targetDist) * SPRING;
-            velocities[si].x += (dx / dist) * force;
-            velocities[si].y += (dy / dist) * force;
-            velocities[ti].x -= (dx / dist) * force;
-            velocities[ti].y -= (dy / dist) * force;
-        });
-
-        // Center gravity
-        for (let i = 0; i < positions.length; i++) {
-            velocities[i].x += (cx - positions[i].x) * 0.001;
-            velocities[i].y += (cy - positions[i].y) * 0.001;
+        let deadCodeClass = null;
+        if (deadCode && details) {
+          if (details.is_dead) deadCodeClass = 'node-dead-code';
+          else deadCodeClass = 'node-alive'; // dims to background
         }
 
-        // Apply velocities
-        for (let i = 0; i < positions.length; i++) {
-            velocities[i].x *= DAMPING;
-            velocities[i].y *= DAMPING;
-            positions[i].x += velocities[i].x;
-            positions[i].y += velocities[i].y;
-            // Keep in bounds
-            const margin = 40;
-            positions[i].x = Math.max(margin, Math.min(W - margin, positions[i].x));
-            positions[i].y = Math.max(margin, Math.min(H - margin, positions[i].y));
+        let bugs = [];
+        if (bugScanner && details && details.issues?.length > 0) {
+          bugs = details.issues;
         }
-    }
 
-    // Apply final positions
-    nodes.forEach((n, i) => { n.tx = positions[i].x; n.ty = positions[i].y; n.x = n.tx; n.y = n.ty - 50; });
-
-    // 4. Cross-module edges
-    gEdges.forEach((e, i) => {
-        const s = nodeMap[e.source], t = nodeMap[e.target];
-        if (s && t) edges.push(new GEdge(s, t, 'imports', '#39d2c0', mods.length * 0.1 + i * 0.12));
-    });
-
-    return { nodes, edges };
-}
-
-/* ────────────────────── REACT COMPONENT ────────────────────── */
-export default function CodeMap({ graph, onFileSelect, onFunctionClick }) {
-    const canvasRef = useRef(null);
-    const state = useRef({ nodes: [], edges: [], particles: new Particles(), pan: { x: 0, y: 0 }, zoom: 1, dragging: false, dragStart: { x: 0, y: 0 }, panStart: { x: 0, y: 0 }, _mouse: { x: -999, y: -999 } });
-    const raf = useRef(null);
-    const lastT = useRef(null);
-
-    // Build graph
-    useEffect(() => {
-        if (!graph || !canvasRef.current) return;
-        const rect = canvasRef.current.getBoundingClientRect();
-        const { nodes, edges } = forceLayout(graph, rect.width, rect.height);
-        const s = state.current;
-        s.nodes = nodes; s.edges = edges;
-        s.particles = new Particles();
-        s.pan = { x: 0, y: 0 }; s.zoom = 1;
-
-        // Stagger start
-        nodes.forEach(n => setTimeout(() => { n.start(); s.particles.emit(n.tx, n.ty, n.color, 5, 2.5, 0.4, 2.5); }, n.delay * 1000));
-        edges.forEach(e => setTimeout(() => e.start(), e.delay * 1000 + 300));
-    }, [graph]);
-
-    // Render loop
-    useEffect(() => {
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        const ctx = canvas.getContext('2d');
-        const resize = () => {
-            const r = canvas.getBoundingClientRect();
-            const d = window.devicePixelRatio || 1;
-            canvas.width = r.width * d; canvas.height = r.height * d;
-            ctx.setTransform(d, 0, 0, d, 0, 0);
+        return {
+          ...n,
+          data: { 
+            ...n.data, 
+            dimmed: !match,
+            heatmapClass,
+            deadCodeClass,
+            bugs
+          }
         };
-        resize();
-        const ro = new ResizeObserver(resize); ro.observe(canvas);
+      });
+    });
+  }, [rawNodes, searchQuery, heatmap, deadCode, bugScanner, setNodes]);
 
-        const tick = (ts) => {
-            const now = ts / 1000;
-            const dt = lastT.current ? Math.min(now - lastT.current, 0.05) : 0.016;
-            lastT.current = now;
-            const s = state.current;
-            const rect = canvas.getBoundingClientRect();
-            const w = rect.width, h = rect.height;
-            const wmx = (s._mouse.x - s.pan.x) / s.zoom;
-            const wmy = (s._mouse.y - s.pan.y) / s.zoom;
+  const onNodeClick = useCallback((event, node) => {
+    const incomers = getIncomers(node, rawNodes, edges).map(n => n.data.label);
+    const outgoers = getOutgoers(node, rawNodes, edges).map(n => n.data.label);
+    setSelectedNodeData({ ...node.data, incomers, outgoers });
+  }, [rawNodes, edges]);
 
-            s.nodes.forEach(n => n.update(dt, wmx, wmy));
-            s.edges.forEach(e => e.update(dt));
-            s.particles.update(dt);
+  const handleAskAI = useCallback(() => {
+    if (onAskAI && selectedNodeData) {
+      onAskAI(`Analyze ${selectedNodeData.label} (${selectedNodeData.rawType}). Provide insights on its architecture and any code smells.`);
+    }
+  }, [onAskAI, selectedNodeData]);
 
-            // Clear
-            ctx.clearRect(0, 0, w, h);
-            ctx.fillStyle = '#121212'; ctx.fillRect(0, 0, w, h);
+  if (!graph) return null;
 
-            // Grid
-            ctx.globalAlpha = 0.04; ctx.strokeStyle = '#30363d'; ctx.lineWidth = 1;
-            const gs = 40 * s.zoom;
-            for (let gx = s.pan.x % gs; gx < w; gx += gs) { ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, h); ctx.stroke(); }
-            for (let gy = s.pan.y % gs; gy < h; gy += gs) { ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(w, gy); ctx.stroke(); }
-            ctx.globalAlpha = 1;
+  return (
+    <div style={{ width: '100%', height: '100%', position: 'relative' }}>
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
+        onNodeClick={onNodeClick}
+        nodeTypes={nodeTypes}
+        fitView
+        minZoom={0.1}
+        maxZoom={4}
+        className="dark"
+        proOptions={{ hideAttribution: true }}
+      >
+        <Background gap={40} size={1} color="var(--border-accent)" />
+        <MiniMap 
+          nodeColor={(n) => {
+            if (n.data.deadCodeClass === 'node-dead-code') return '#EF4444';
+            if (n.type === 'module') return '#8B5CF6';
+            if (n.type === 'class') return '#22D3EE';
+            return '#10B981';
+          }}
+          maskColor="rgba(10, 10, 15, 0.7)"
+          style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border-primary)' }}
+        />
+        <Controls />
 
-            ctx.save(); ctx.translate(s.pan.x, s.pan.y); ctx.scale(s.zoom, s.zoom);
-            s.edges.forEach(e => e.draw(ctx, s.particles));
-            s.nodes.forEach(n => n.draw(ctx));
-            s.particles.draw(ctx);
-            ctx.restore();
+        {/* Top Center: Search */}
+        <Panel position="top-center">
+          <div className="graph-search-bar animate-slide-in-up" style={{ marginTop: 12 }}>
+            <Search size={14} color="var(--text-muted)" />
+            <input 
+              className="graph-search-input" 
+              placeholder="Filter nodes..." 
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </div>
+        </Panel>
 
-            // HUD
-            if (graph) {
-                ctx.fillStyle = '#6e7681'; ctx.font = '10px sans-serif';
-                ctx.textAlign = 'right';
-                ctx.fillText(`${graph.stats?.total_modules || 0} modules · ${graph.stats?.total_functions || 0} functions · ${graph.stats?.total_classes || 0} classes`, w - 10, h - 6);
-                ctx.textAlign = 'left';
-                ctx.fillText('Scroll to zoom · Drag to pan · Click node to open file', 10, h - 6);
-            }
+        {/* Bottom Center: Insight Toggles */}
+        <Panel position="bottom-center">
+          <div className="insight-toggles animate-slide-in-up" style={{ marginBottom: 16 }}>
+            <button className={`insight-toggle heatmap ${heatmap ? 'active' : ''}`} onClick={() => setHeatmap(!heatmap)} title="Color nodes by dependency count">
+              <Flame size={14} color={heatmap ? "var(--accent-orange)" : "currentColor"} /> Heatmap
+            </button>
+            <button className={`insight-toggle deadcode ${deadCode ? 'active' : ''}`} onClick={() => setDeadCode(!deadCode)} title="Highlight unused functions">
+              <Ghost size={14} color={deadCode ? "var(--accent-red)" : "currentColor"} /> Dead Code
+            </button>
+            <button className={`insight-toggle bugs ${bugScanner ? 'active' : ''}`} onClick={() => setBugScanner(!bugScanner)} title="Flag AST anti-patterns">
+              <Bug size={14} color={bugScanner ? "var(--accent-purple)" : "currentColor"} /> Bug Scanner
+            </button>
+          </div>
+        </Panel>
 
-            raf.current = requestAnimationFrame(tick);
-        };
-        raf.current = requestAnimationFrame(tick);
-        return () => { cancelAnimationFrame(raf.current); ro.disconnect(); };
-    }, [graph]);
+        {/* Top Right: Layout control */}
+        <Panel position="top-right">
+          <div className="glass-panel" style={{ padding: 8, borderRadius: 12, display: 'flex', gap: 6 }}>
+            <button className="btn-icon" title="Auto Layout" onClick={() => {
+              const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(nodes, edges);
+              setNodes([...layoutedNodes]);
+              setEdges([...layoutedEdges]);
+            }}>
+              <Layout size={16} />
+            </button>
+          </div>
+        </Panel>
+      </ReactFlow>
 
-    const onMove = useCallback(e => {
-        const r = canvasRef.current?.getBoundingClientRect(); if (!r) return;
-        const s = state.current;
-        s._mouse = { x: e.clientX - r.left, y: e.clientY - r.top };
-        if (s.dragging) { s.pan.x = s.panStart.x + (e.clientX - s.dragStart.x); s.pan.y = s.panStart.y + (e.clientY - s.dragStart.y); }
-    }, []);
+      {/* Slide-in Detail Panel */}
+      {selectedNodeData && (
+        <div className="glass-panel animate-slide-in-right" style={{
+          position: 'absolute', right: 16, top: 16, bottom: 16, width: 320, zIndex: 100,
+          display: 'flex', flexDirection: 'column', border: '1px solid var(--border-highlight)'
+        }}>
+          <div className="panel-header" style={{ justifyContent: 'space-between', borderBottom: '1px solid var(--glass-border)' }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text-primary)' }}>
+              <Info size={14} /> Node Info
+            </span>
+            <button className="btn-icon" onClick={() => setSelectedNodeData(null)}><X size={14} /></button>
+          </div>
+          
+          <div className="panel-body" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 16, overflowY: 'auto' }}>
+            <div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{selectedNodeData.rawType}</div>
+              <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--accent-cyan)', fontFamily: 'var(--font-mono)', wordBreak: 'break-all' }}>
+                {selectedNodeData.label}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, fontFamily: 'var(--font-mono)', wordBreak: 'break-all' }}>
+                {selectedNodeData.fullPath}
+              </div>
+            </div>
 
-    const onDown = useCallback(e => {
-        const s = state.current; s.dragging = true;
-        s.dragStart = { x: e.clientX, y: e.clientY }; s.panStart = { ...s.pan };
-    }, []);
+            {selectedNodeData.details?.is_dead && (
+              <div style={{ padding: 8, background: 'rgba(239,68,68,0.1)', color: '#EF4444', border: '1px solid rgba(239,68,68,0.4)', borderRadius: 8, fontSize: 12, display: 'flex', gap: 6 }}>
+                <Ghost size={14} /> <strong>Dead Code!</strong> No internal incoming calls.
+              </div>
+            )}
 
-    const onUp = useCallback(e => {
-        const s = state.current;
-        const moved = Math.abs(e.clientX - s.dragStart.x) + Math.abs(e.clientY - s.dragStart.y);
-        s.dragging = false;
-        if (moved < 5) {
-            const r = canvasRef.current?.getBoundingClientRect(); if (!r) return;
-            const wx = (e.clientX - r.left - s.pan.x) / s.zoom;
-            const wy = (e.clientY - r.top - s.pan.y) / s.zoom;
-            for (const n of s.nodes) {
-                if (!n.visible) continue;
-                if ((wx - n.x) ** 2 + (wy - n.y) ** 2 <= (n.cr + 5) ** 2) {
-                    if (n.type === 'module') onFileSelect?.(n.id);
-                    else if (n.id.includes('::')) onFunctionClick?.(n.id.split('::')[0]);
-                    s.particles.emit(n.x, n.y, n.color, 10, 3, 0.5, 3);
-                    break;
-                }
-            }
-        }
-    }, [onFileSelect, onFunctionClick]);
+            {selectedNodeData.details?.issues?.length > 0 && (
+              <div style={{ padding: 8, background: 'rgba(139,92,246,0.1)', color: '#8B5CF6', border: '1px solid rgba(139,92,246,0.4)', borderRadius: 8, fontSize: 12 }}>
+                <div style={{ fontWeight: 600, marginBottom: 4, display: 'flex', gap: 6 }}><Bug size={14} /> Scanner Warnings:</div>
+                <ul style={{ paddingLeft: 16 }}>
+                  {selectedNodeData.details.issues.map((iss, i) => <li key={i}>{iss}</li>)}
+                </ul>
+              </div>
+            )}
 
-    const onWheel = useCallback(e => {
-        e.preventDefault();
-        const s = state.current;
-        const r = canvasRef.current?.getBoundingClientRect(); if (!r) return;
-        const mx = e.clientX - r.left, my = e.clientY - r.top;
-        const oz = s.zoom;
-        s.zoom = Math.max(0.2, Math.min(4, s.zoom * (e.deltaY > 0 ? 0.9 : 1.1)));
-        s.pan.x = mx - (mx - s.pan.x) * (s.zoom / oz);
-        s.pan.y = my - (my - s.pan.y) * (s.zoom / oz);
-    }, []);
+            {selectedNodeData.details?.docstring && (
+              <div style={{ background: 'rgba(0,0,0,0.3)', padding: 10, borderRadius: 8, fontSize: 12, border: '1px solid var(--border-primary)' }}>
+                <em>"{selectedNodeData.details.docstring}"</em>
+              </div>
+            )}
 
-    const reset = useCallback(() => { const s = state.current; s.pan = { x: 0, y: 0 }; s.zoom = 1; }, []);
-
-    if (!graph) {
-        return (
-            <div className="empty-state">
-                <div className="empty-state-icon">🗺️</div>
-                <div className="empty-state-title">Code Map</div>
-                <div className="empty-state-text">
-                    Click <strong>"Analyze Project"</strong> to generate an animated graph of your codebase.
+            {selectedNodeData.incomers?.length > 0 && (
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>Used by ({selectedNodeData.incomers.length}):</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                  {selectedNodeData.incomers.slice(0, 10).map(inc => (
+                    <span key={inc} style={{ background: 'var(--bg-elevated)', padding: '2px 6px', borderRadius: 4, fontSize: 11, border: '1px solid var(--border-primary)' }}>{inc}</span>
+                  ))}
+                  {selectedNodeData.incomers.length > 10 && <span style={{ fontSize: 11 }}>+ {selectedNodeData.incomers.length - 10} more</span>}
                 </div>
-            </div>
-        );
-    }
+              </div>
+            )}
 
-    return (
-        <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '4px 8px', borderBottom: '1px solid var(--border-primary)', flexShrink: 0 }}>
-                <button className="btn-icon" onClick={reset} title="Reset view"><RotateCcw size={13} /></button>
-                <button className="btn-icon" onClick={() => { state.current.zoom = Math.min(4, state.current.zoom * 1.3); }} title="Zoom in"><ZoomIn size={13} /></button>
-                <button className="btn-icon" onClick={() => { state.current.zoom = Math.max(0.2, state.current.zoom * 0.7); }} title="Zoom out"><ZoomOut size={13} /></button>
-                <span style={{ flex: 1 }} />
-                <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{graph.stats?.total_modules} modules</span>
+            <div style={{ flex: 1 }} />
+            
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 16 }}>
+              <button className="btn btn-secondary" onClick={() => {
+                if (selectedNodeData.rawType === 'Module') onFileSelect?.(selectedNodeData.fullPath);
+                else onFunctionClick?.(selectedNodeData.parent || selectedNodeData.fullPath);
+              }}>
+                Open in Editor
+              </button>
+              <button className="btn btn-primary" onClick={handleAskAI}>
+                <Cpu size={14} /> Ask AI about this
+              </button>
             </div>
-            <canvas ref={canvasRef} style={{ flex: 1, width: '100%', cursor: 'grab', display: 'block' }}
-                onMouseMove={onMove} onMouseDown={onDown} onMouseUp={onUp} onWheel={onWheel} />
+          </div>
         </div>
-    );
+      )}
+    </div>
+  );
 }

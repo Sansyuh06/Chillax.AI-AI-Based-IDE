@@ -23,7 +23,7 @@ async function initMermaid() {
             nodeBorder: '#30363d', mainBkg: '#161b22',
         },
         flowchart: {
-            htmlLabels: true, curve: 'basis',
+            htmlLabels: false, curve: 'basis',
             nodeSpacing: 50, rankSpacing: 65,
             padding: 20, useMaxWidth: false,
         },
@@ -202,7 +202,7 @@ export default function Visualizer({ activeFile }) {
         const bbox = svg.getBBox();
         const w = bbox.width || svg.scrollWidth || 800;
         const h = bbox.height || svg.scrollHeight || 600;
-        const ideal = Math.max(0.3, Math.min(Math.min((cr.width - 20) / w, (cr.height - 20) / h), 1.5));
+        const ideal = Math.max(0.2, Math.min(Math.min((cr.width - 20) / w, (cr.height - 20) / h), 1.5));
         setZoom(ideal);
         // Scroll to center after zoom applies
         setTimeout(() => {
@@ -279,7 +279,9 @@ export default function Visualizer({ activeFile }) {
                     const bbox = s2.getBBox();
                     const w = bbox.width || s2.scrollWidth || 800;
                     const h = bbox.height || s2.scrollHeight || 600;
-                    const ideal = Math.max(0.3, Math.min(Math.min((cr.width - 20) / w, (cr.height - 20) / h), 1.5));
+                    // Auto-load caps min zoom at 0.85 to maintain text readability.
+                    // User can manually zoom later down to 0.2 if desired.
+                    const ideal = Math.max(0.85, Math.min(Math.min((cr.width - 40) / w, (cr.height - 40) / h), 1.3));
                     setZoom(ideal);
                     setTimeout(() => {
                         cont.scrollTo({

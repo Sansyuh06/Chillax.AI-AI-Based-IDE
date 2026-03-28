@@ -8,14 +8,27 @@ from app.routes.products import handle_update_stock
 from app.models import Order, OrderItem
 
 
-def handle_checkout(token: str, cart_items: list[dict]) -> dict:
+# FIX: Changed signature from handle_checkout(token, cart_items) to
+# handle_checkout(token, data).
+#
+# The dispatch() function in app/main.py injects keyword arguments by
+# inspecting parameter names. It knows how to inject "token" and "data",
+# but it has no case for "cart_items". The old signature caused a TypeError
+# at runtime:
+#   TypeError: handle_checkout() missing 1 required positional argument: 'cart_items'
+#
+# The fix follows the same convention as every other route handler: accept
+# a generic `data: dict` and extract the domain-specific fields from it.
+def handle_checkout(token: str, data: dict) -> dict:
     """
     POST /checkout
-    cart_items: [{"product_id": 1, "quantity": 2}, ...]
+    data: {"cart_items": [{"product_id": 1, "quantity": 2}, ...]}
     """
     user = get_current_user(token)
     if user is None:
         return {"error": "Unauthorized", "status": 401}
+
+    cart_items = data.get("cart_items", [])
 
     if not cart_items:
         return {"error": "Cart is empty", "status": 400}

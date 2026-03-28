@@ -88,7 +88,7 @@ export function analyzeProject(root) {
     });
 }
 
-export function explainCode({ filePath, selectedCode, functionName, question }) {
+export function explainCode({ filePath, selectedCode, functionName, question, experienceLevel, gitContext }) {
     return request('/explain', {
         method: 'POST',
         body: JSON.stringify({
@@ -96,14 +96,34 @@ export function explainCode({ filePath, selectedCode, functionName, question }) 
             selected_code: selectedCode,
             function_name: functionName || null,
             question: question || null,
+            experience_level: experienceLevel || 'Mid',
+            git_context: gitContext || null,
         }),
     });
 }
 
-export function askProject(question) {
+export function askProject(question, experienceLevel) {
     return request('/ask-project', {
         method: 'POST',
-        body: JSON.stringify({ question }),
+        body: JSON.stringify({ 
+            question,
+            experience_level: experienceLevel || 'Mid'
+        }),
+    });
+}
+
+export function getGitContext(path) {
+    return request(`/git-context?path=${encodeURIComponent(path)}`);
+}
+
+export function generateDocs({ filePath, selectedCode, functionName }) {
+    return request('/generate-docs', {
+        method: 'POST',
+        body: JSON.stringify({
+            file_path: filePath,
+            selected_code: selectedCode,
+            function_name: functionName || null
+        }),
     });
 }
 
